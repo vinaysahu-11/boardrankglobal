@@ -68,6 +68,7 @@
   min-height: 2.75rem;
   align-items: center;
   justify-content: center;
+  gap: .5rem;
   border: 1px solid rgb(243 240 231 / 25%);
   border-radius: 9999px;
   padding: 0 1.25rem;
@@ -80,6 +81,10 @@
   text-transform: uppercase;
   white-space: nowrap;
   transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+
+.brg-intro-root .brg-intro-sound-toggle.is-blocked {
+  border-color: rgb(202 139 112 / 70%);
 }
 
 .brg-intro-root .brg-intro-sound-toggle.is-light {

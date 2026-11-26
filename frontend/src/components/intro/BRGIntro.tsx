@@ -29,6 +29,23 @@ function ControlIcon({ replay }: { replay: boolean }) {
   );
 }
 
+function SoundIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4"
+      className="h-4 w-4 shrink-0" aria-hidden="true">
+      <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+      {muted ? (
+        <path d="m21 9-6 6m0-6 6 6" />
+      ) : (
+        <>
+          <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <path d="M18.5 6a8.5 8.5 0 0 1 0 12" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 function BrandMark({ reduced, small = false }: { reduced: boolean; small?: boolean }) {
   return (
     <div className="relative flex flex-col items-center">
@@ -63,37 +80,82 @@ export default function BRGIntro({ onComplete }: BRGIntroProps) {
     () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   const [departed, setDeparted] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const callback = useRef(onComplete);
   const completed = useRef(false);
   const introAudio = useRef<HTMLAudioElement | null>(null);
   const introStartedAt = useRef(0);
   const introIsPlaying = useRef(true);
+  const soundEnabledRef = useRef(true);
+  const autoplayBlockedRef = useRef(false);
+  const needsSyncRef = useRef(false);
   const reducedMotionRef = useRef(reduced);
   const light = scene >= 6 || reduced;
 
+  const syncAudioToIntroTime = useCallback(() => {
+    const audio = introAudio.current;
+    if (!audio || !needsSyncRef.current || audio.readyState < HTMLMediaElement.HAVE_METADATA || !Number.isFinite(audio.duration)) return;
+    needsSyncRef.current = false;
+    const elapsed = Math.max(0, (performance.now() - introStartedAt.current) / 1000);
+    const maxStart = Math.max(0, audio.duration - 0.1);
+    audio.currentTime = Math.min(elapsed + AUDIO_LEAD_IN, maxStart);
+  }, []);
+
   const playSound = useCallback((restart = false) => {
     const audio = introAudio.current;
-    if (!audio) return;
+    if (!audio || !soundEnabledRef.current || reducedMotionRef.current) return;
 
     if (restart) introStartedAt.current = performance.now();
-    const seekToIntroTime = () => {
-      if (introAudio.current !== audio || audio.readyState < HTMLMediaElement.HAVE_METADATA || !Number.isFinite(audio.duration)) return;
-      const elapsed = Math.max(0, (performance.now() - introStartedAt.current) / 1000);
-      audio.currentTime = Math.min(elapsed + AUDIO_LEAD_IN, audio.duration);
-    };
-    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) seekToIntroTime();
-    else audio.addEventListener('loadedmetadata', seekToIntroTime, { once: true });
+    audio.muted = false;
+    audio.volume = 1;
+    needsSyncRef.current = true;
+    syncAudioToIntroTime();
 
-    void audio.play().catch((error: unknown) => {
+    void audio.play().then(() => {
       if (introAudio.current !== audio) return;
+      autoplayBlockedRef.current = false;
+      setAutoplayBlocked(false);
+    }).catch((error: unknown) => {
+      if (introAudio.current !== audio) return;
+      needsSyncRef.current = false;
       if (error instanceof DOMException && error.name === 'NotAllowedError') {
-        console.warn('The browser blocked autoplay for the BRG intro soundtrack.', error);
+        autoplayBlockedRef.current = true;
+        setAutoplayBlocked(true);
         return;
       }
+      if (error instanceof DOMException && error.name === 'AbortError') return;
 
       console.error('Unable to play the BRG intro soundtrack.', error);
     });
-  }, []);
+  }, [syncAudioToIntroTime]);
+
+  const toggleSound = useCallback(() => {
+    const audio = introAudio.current;
+    if (!audio) return;
+
+    // Clicking while autoplay is blocked enables and starts sound rather than muting it.
+    if (autoplayBlockedRef.current && soundEnabledRef.current && introIsPlaying.current) {
+      playSound();
+      return;
+    }
+
+    const next = !soundEnabledRef.current;
+    soundEnabledRef.current = next;
+    setSoundEnabled(next);
+
+    if (!next) {
+      needsSyncRef.current = false;
+      autoplayBlockedRef.current = false;
+      setAutoplayBlocked(false);
+      audio.pause();
+      return;
+    }
+
+    if (introIsPlaying.current && !reducedMotionRef.current) {
+      playSound();
+    }
+  }, [playSound]);
 
   const finish = useCallback(() => {
     introIsPlaying.current = false;
@@ -122,41 +184,58 @@ export default function BRGIntro({ onComplete }: BRGIntroProps) {
   }, []);
 
   useEffect(() => {
-    const audio = new Audio('/assets/audio/brg-cinematic-intro-1126.mp3');
-    audio.preload = 'auto';
-    audio.autoplay = true;
+    const audio = introAudio.current;
+    if (!audio) return;
+
     audio.volume = 1;
     audio.muted = false;
-    introAudio.current = audio;
     introStartedAt.current = performance.now();
-    const autoplayTimer = window.setTimeout(() => {
-      if (!reducedMotionRef.current) playSound();
-    }, 0);
-    const retryPlaybackOnInteraction = (event: Event) => {
-      const currentAudio = introAudio.current;
-      if (!currentAudio?.paused || !introIsPlaying.current || reducedMotionRef.current) return;
-      if (event.target instanceof Element && event.target.closest('.brg-intro-action-row button')) return;
-      playSound();
+
+    const handleLoadedMetadata = () => {
+      syncAudioToIntroTime();
     };
-    document.addEventListener('pointerdown', retryPlaybackOnInteraction, true);
-    document.addEventListener('keydown', retryPlaybackOnInteraction, true);
+    const handlePlay = () => {
+      if (introAudio.current !== audio) return;
+      autoplayBlockedRef.current = false;
+      setAutoplayBlocked(false);
+    };
     const handleAudioError = () => {
       if (introAudio.current !== audio) return;
       console.error('Unable to load the BRG intro soundtrack.', audio.error);
     };
+
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('play', handlePlay);
     audio.addEventListener('error', handleAudioError);
 
+    if (!reducedMotionRef.current && soundEnabledRef.current) {
+      playSound();
+    }
+
+    const retryPlaybackOnInteraction = (event: Event) => {
+      const currentAudio = introAudio.current;
+      if (!currentAudio?.paused || !introIsPlaying.current || !soundEnabledRef.current || reducedMotionRef.current) return;
+      if (event.target instanceof Element && event.target.closest('.brg-intro-action-row button')) return;
+      playSound();
+    };
+
+    // Listen on pointerup/click/touchend/keydown so desktop and Safari/mobile browsers all unlock media activation.
+    document.addEventListener('pointerup', retryPlaybackOnInteraction, true);
+    document.addEventListener('click', retryPlaybackOnInteraction, true);
+    document.addEventListener('touchend', retryPlaybackOnInteraction, true);
+    document.addEventListener('keydown', retryPlaybackOnInteraction, true);
+
     return () => {
-      window.clearTimeout(autoplayTimer);
-      document.removeEventListener('pointerdown', retryPlaybackOnInteraction, true);
+      document.removeEventListener('pointerup', retryPlaybackOnInteraction, true);
+      document.removeEventListener('click', retryPlaybackOnInteraction, true);
+      document.removeEventListener('touchend', retryPlaybackOnInteraction, true);
       document.removeEventListener('keydown', retryPlaybackOnInteraction, true);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('error', handleAudioError);
       audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
-      introAudio.current = null;
     };
-  }, [playSound]);
+  }, [playSound, syncAudioToIntroTime]);
 
   useEffect(() => {
     if (reduced) {
@@ -180,9 +259,11 @@ export default function BRGIntro({ onComplete }: BRGIntroProps) {
     introIsPlaying.current = !reduced;
     setPlaying(!reduced);
     setRun(value => value + 1);
-    if (!reduced) playSound(true);
+    if (!reduced && soundEnabledRef.current) playSound(true);
   }
 
+  const soundLabel = !soundEnabled ? 'Sound off' : autoplayBlocked ? 'Enable sound' : 'Sound on';
+  const soundMuted = !soundEnabled || autoplayBlocked;
   const title = 'font-display font-semibold uppercase leading-[.86] tracking-[-.025em]';
   return (
     <main aria-label="Boardrank Global cinematic introduction"
@@ -192,6 +273,7 @@ export default function BRGIntro({ onComplete }: BRGIntroProps) {
         clipPath: departed ? 'inset(0 0 100% 0)' : 'inset(0)',
         transition: reduced ? 'none' : 'background-color 1000ms cubic-bezier(.4,0,.2,1), color 800ms, clip-path 800ms cubic-bezier(.76,0,.24,1)',
       }}>
+      <audio ref={introAudio} src="/assets/audio/brg-cinematic-intro-1126.mp3" preload="auto" playsInline aria-hidden="true" />
       <div aria-hidden="true" className={`pointer-events-none absolute inset-0 transition-opacity duration-1000 ${light ? 'opacity-0' : 'opacity-100'}`}>
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_48%,#284438_0%,#142a22_30%,#091612_67%,#060d0b_100%)]" />
         <div key={`light-${run}`} className="absolute inset-0"
@@ -248,10 +330,17 @@ export default function BRGIntro({ onComplete }: BRGIntroProps) {
 
       <div className="absolute inset-x-0 bottom-7 z-20 flex justify-center pb-[env(safe-area-inset-bottom)] md:bottom-10">
         <div className="brg-intro-action-row">
-          <span className={`brg-intro-sound-toggle${light ? ' is-light' : ''}`} role="status">
-            Sound on
-          </span>
-          <button onClick={playing && !reduced ? finish : replay}
+          <button
+            type="button"
+            onClick={toggleSound}
+            tabIndex={departed ? -1 : 0}
+            aria-pressed={!soundMuted}
+            aria-label={soundMuted ? 'Enable intro sound' : 'Mute intro sound'}
+            className={`brg-intro-sound-toggle${light ? ' is-light' : ''}${autoplayBlocked && soundEnabled ? ' is-blocked' : ''}`}>
+            <SoundIcon muted={soundMuted} />
+            {soundLabel}
+          </button>
+          <button type="button" onClick={playing && !reduced ? finish : replay}
             tabIndex={departed ? -1 : 0}
             className={`flex min-h-11 cursor-pointer items-center justify-center gap-3 whitespace-nowrap rounded-full border px-6 text-xs font-medium uppercase tracking-[.18em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ca8b70] focus-visible:ring-offset-4 ${light ? 'border-ink/25 bg-ivory text-ink hover:border-ink focus-visible:ring-offset-ivory' : 'border-ivory/25 bg-[#0c1b15] text-ivory hover:border-ivory/70 focus-visible:ring-offset-[#091612]'}`}>
             <ControlIcon replay={!playing || reduced} />
