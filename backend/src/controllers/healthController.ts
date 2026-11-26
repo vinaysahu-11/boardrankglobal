@@ -1,0 +1,8 @@
+import { Request, Response } from 'express'
+
+export function getHealth(_request: Request, response: Response): void {
+  response.json({
+    status: 'ok',
+    service: 'boardrank-global-backend',
+  })
+}
